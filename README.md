@@ -166,3 +166,7 @@ The app will open at `http://localhost:8501` 🎉
 - [Google Gemini](https://ai.google.dev/) — AI/LLM
 - [Streamlit](https://streamlit.io/) — Web framework
 - [Folium](https://python-visualization.github.io/folium/) — Map visualization
+
+
+## Author
+* Anas Nakhuda
