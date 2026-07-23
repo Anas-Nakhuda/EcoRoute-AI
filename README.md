@@ -15,7 +15,6 @@
 - 🌤️ **Real-Time Weather** — Live weather data for origin and destination via OpenWeather API
 - 🤖 **AI Travel Advisory** — Gemini-powered safety tips, eco-driving advice, and packing checklists
 - 🌿 **CO₂ Estimation** — Track your carbon footprint per trip
-- 🌐 **Bilingual (EN/HI)** — Full English and Hindi language support
 - 📜 **Trip History** — Automatically saves past trips for reference
 
 ---
