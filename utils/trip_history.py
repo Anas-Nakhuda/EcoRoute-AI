@@ -43,6 +43,7 @@ def clear_history() -> None:
 
 def render_history_sidebar(lang: str = "en") -> None:
     from utils.translations import t
+    from components.ui_components import _flatten
 
     st.sidebar.markdown(f"### {t('history_title', lang)}")
     history = _load_history()
@@ -51,16 +52,30 @@ def render_history_sidebar(lang: str = "en") -> None:
         st.sidebar.caption(t("history_empty", lang))
         return
 
+    cards_html = []
     for trip in history[:8]:
         origin = trip.get("origin", "?")
         dest = trip.get("destination", "?")
         mode = trip.get("mode", "🚗")
         distance = trip.get("distance_km", "?")
-        st.sidebar.markdown(
-            f"**{mode} {origin} → {dest}**  \n"
-            f"<span style='opacity:0.7; font-size:0.82rem;'>{distance} km</span>",
-            unsafe_allow_html=True,
-        )
+        duration = trip.get("duration_min")
+
+        duration_str = ""
+        if isinstance(duration, (int, float)):
+            hours, minutes = int(duration // 60), int(duration % 60)
+            duration_str = f" · {hours}h {minutes}m" if hours else f" · {minutes}m"
+
+        cards_html.append(_flatten(f"""
+            <div class="history-card">
+                <div class="history-icon">{mode}</div>
+                <div class="history-info">
+                    <span class="history-route">{origin} → {dest}</span>
+                    <span class="history-meta">{distance} km{duration_str}</span>
+                </div>
+            </div>
+        """))
+
+    st.sidebar.markdown("".join(cards_html), unsafe_allow_html=True)
 
     if st.sidebar.button(t("history_clear", lang), key="clear_history_btn", use_container_width=True):
         clear_history()

@@ -34,6 +34,9 @@ from components.ui_components import (
     render_divider,
     render_section_header,
     render_footer,
+    render_progress_tracker,
+    normalize_advisory_text,
+    render_mode_notice,
     _flatten,
 )
 from utils.translations import t
@@ -179,74 +182,130 @@ def main():
         owm_key = OPENWEATHER_API_KEY
         gemini_key = GEMINI_API_KEY
 
-        with st.status(t("planning_text", lang), expanded=True) as status:
-            # Step 1: Route
-            try:
-                st.write(t("status_geocoding", lang))
-                st.write(t("status_routing", lang))
-                route_result = fetch_route_complete(origin, destination)
-                origin_geo = route_result["origin_geo"]
-                dest_geo = route_result["dest_geo"]
-                route_data = route_result["route_data"]
-                st.write(f"✅ Route: {route_data['distance_km']} km, {route_data['duration_min']} min")
-            except ValueError as e:
-                st.error(t("error_geocoding", lang, location=str(e)))
-                status.update(label="❌ Failed", state="error")
-                return
-            except Exception as e:
-                st.error(t("error_routing", lang) + f"\n\nDetails: {e}")
-                status.update(label="❌ Failed", state="error")
-                return
+        # ── Animated progress tracker (replaces the plain st.status log) ──
+        steps = [
+            {"icon": "📍", "label": t("status_geocoding", lang), "state": "active"},
+            {"icon": "🗺️", "label": t("status_routing", lang), "state": "pending"},
+            {"icon": "🌤️", "label": t("status_weather", lang), "state": "pending"},
+            {"icon": "🤖", "label": t("status_ai", lang), "state": "pending"},
+        ]
+        tracker = render_progress_tracker()
+        tracker.update(steps)
 
-            # Step 2: Weather
-            origin_weather = None
-            dest_weather = None
-            try:
-                st.write(t("status_weather", lang))
-                origin_weather = fetch_weather(origin_geo["lat"], origin_geo["lon"], owm_key)
-                dest_weather = fetch_weather(dest_geo["lat"], dest_geo["lon"], owm_key)
-                st.write(f"✅ Origin: {origin_weather['temp_c']}°C, {origin_weather['weather_desc']}")
-                st.write(f"✅ Dest: {dest_weather['temp_c']}°C, {dest_weather['weather_desc']}")
-            except Exception as e:
-                st.warning(t("error_weather", lang) + f" ({e})")
-                fallback = {
-                    "temp_c": "N/A", "feels_like_c": "N/A", "temp_min_c": "N/A",
-                    "temp_max_c": "N/A", "humidity_pct": "N/A", "pressure_hpa": "N/A",
-                    "weather_main": "Unknown", "weather_desc": "Unavailable",
-                    "weather_icon": "01d", "weather_icon_url": "",
-                    "wind_speed_ms": "N/A", "wind_deg": 0, "clouds_pct": "N/A",
-                    "visibility_m": "N/A", "location_name": "Unknown",
-                }
-                origin_weather = origin_weather or fallback
-                dest_weather = dest_weather or fallback
+        # Step 1 + 2: Geocoding + Route (fetch_route_complete does both)
+        try:
+            route_result = fetch_route_complete(origin, destination)
+            origin_geo = route_result["origin_geo"]
+            dest_geo = route_result["dest_geo"]
+            route_data = route_result["route_data"]
 
-            # Step 3: AI Advisory
-            advisory_text = ""
-            try:
-                st.write(t("status_ai", lang))
-                origin_name = origin_geo.get("display_name", origin).split(",")[0]
-                dest_name = dest_geo.get("display_name", destination).split(",")[0]
-
-                advisory_text = generate_advisory(
-                    route_data=route_data,
-                    origin_weather=origin_weather,
-                    dest_weather=dest_weather,
-                    gemini_api_key=gemini_key,
-                    language=lang,
-                    travel_mode=mode_key,
-                    origin_name=origin_name,
-                    dest_name=dest_name,
-                )
-                st.write("✅ AI advisory generated!")
-            except Exception as e:
-                st.warning(t("error_ai", lang))
-                advisory_text = (
-                    f"⚠️ **AI Advisory Unavailable**\n\n"
-                    f"Could not generate advisory. Error: `{e}`\n\n"
-                    f"Please check your Gemini API key in config.py / .env."
+            # OSRM's free demo server only routes with the "driving" profile,
+            # so its raw duration reflects car speeds no matter which mode is
+            # selected. Recalculate duration using the chosen mode's realistic
+            # average speed, keeping OSRM's road distance as the base figure.
+            mode_cfg = TRAVEL_MODES.get(mode_key, {})
+            avg_speed = mode_cfg.get("avg_speed_kmh")
+            if avg_speed:
+                route_data["duration_min"] = round(
+                    (route_data["distance_km"] / avg_speed) * 60, 1
                 )
 
-            status.update(label=t("status_complete", lang), state="complete")
+            # Flag mode/distance combinations that aren't realistic, rather
+            # than silently showing a misleading duration (e.g. "cycling"
+            # 300 km in a few hours).
+            mode_warning = None
+            max_km = mode_cfg.get("max_realistic_km")
+            min_km = mode_cfg.get("min_realistic_km")
+            distance_km = route_data["distance_km"]
+            if max_km and distance_km > max_km:
+                mode_warning = (
+                    f"⚠️ {distance_km} km is a long way to cover by {mode_key.split(' ', 1)[-1].lower()} "
+                    f"in one trip. The duration below assumes a steady pace the whole way — "
+                    f"for a route this long, Car or Train would be more realistic."
+                )
+            elif min_km and distance_km < min_km:
+                mode_warning = (
+                    f"ℹ️ {mode_key.split(' ', 1)[-1]} usually isn't the fastest choice for a "
+                    f"{distance_km} km hop — Car or Bike will likely get you there quicker door-to-door."
+                )
+
+            steps[0]["state"] = "done"
+            steps[1]["state"] = "done"
+            steps[1]["detail"] = f"{route_data['distance_km']} km · {route_data['duration_min']} min"
+            steps[2]["state"] = "active"
+            tracker.update(steps)
+        except ValueError as e:
+            steps[0]["state"] = "error"
+            tracker.update(steps)
+            st.error(t("error_geocoding", lang, location=str(e)))
+            return
+        except Exception as e:
+            steps[0]["state"] = "done"
+            steps[1]["state"] = "error"
+            tracker.update(steps)
+            st.error(t("error_routing", lang) + f"\n\nDetails: {e}")
+            return
+
+        # Step 3: Weather
+        origin_weather = None
+        dest_weather = None
+        try:
+            origin_weather = fetch_weather(origin_geo["lat"], origin_geo["lon"], owm_key)
+            dest_weather = fetch_weather(dest_geo["lat"], dest_geo["lon"], owm_key)
+
+            steps[2]["state"] = "done"
+            steps[2]["detail"] = f"{origin_weather['temp_c']}°C / {dest_weather['temp_c']}°C"
+            steps[3]["state"] = "active"
+            tracker.update(steps)
+        except Exception as e:
+            steps[2]["state"] = "error"
+            tracker.update(steps)
+            st.warning(t("error_weather", lang) + f" ({e})")
+            fallback = {
+                "temp_c": "N/A", "feels_like_c": "N/A", "temp_min_c": "N/A",
+                "temp_max_c": "N/A", "humidity_pct": "N/A", "pressure_hpa": "N/A",
+                "weather_main": "Unknown", "weather_desc": "Unavailable",
+                "weather_icon": "01d", "weather_icon_url": "",
+                "wind_speed_ms": "N/A", "wind_deg": 0, "clouds_pct": "N/A",
+                "visibility_m": "N/A", "location_name": "Unknown",
+            }
+            origin_weather = origin_weather or fallback
+            dest_weather = dest_weather or fallback
+            steps[3]["state"] = "active"
+            tracker.update(steps)
+
+        # Step 4: AI Advisory
+        advisory_text = ""
+        try:
+            origin_name = origin_geo.get("display_name", origin).split(",")[0]
+            dest_name = dest_geo.get("display_name", destination).split(",")[0]
+
+            raw_advisory = generate_advisory(
+                route_data=route_data,
+                origin_weather=origin_weather,
+                dest_weather=dest_weather,
+                gemini_api_key=gemini_key,
+                language=lang,
+                travel_mode=mode_key,
+                origin_name=origin_name,
+                dest_name=dest_name,
+            )
+            # Normalize here regardless of what shape the agent returned
+            # (plain string, list of content blocks, etc.) — this is the
+            # fix for the AI Advisory panel showing raw Python object text.
+            advisory_text = normalize_advisory_text(raw_advisory)
+
+            steps[3]["state"] = "done"
+            tracker.update(steps)
+        except Exception as e:
+            steps[3]["state"] = "error"
+            tracker.update(steps)
+            st.warning(t("error_ai", lang))
+            advisory_text = (
+                f"⚠️ **AI Advisory Unavailable**\n\n"
+                f"Could not generate advisory. Error: `{e}`\n\n"
+                f"Please check your Gemini API key in config.py / .env."
+            )
 
         # Save to session
         st.session_state.results = {
@@ -257,6 +316,7 @@ def main():
             "dest_weather": dest_weather,
             "advisory": advisory_text,
             "mode_key": mode_key,
+            "mode_warning": mode_warning,
             "origin_text": origin,
             "dest_text": destination,
         }
@@ -273,7 +333,7 @@ def main():
                     if isinstance(origin_weather.get("weather_desc"), str) else "N/A",
                 "dest_weather_desc": dest_weather.get("weather_desc", "N/A")
                     if isinstance(dest_weather.get("weather_desc"), str) else "N/A",
-                "advisory_summary": advisory_text[:200] if advisory_text else "",
+                "advisory_summary": normalize_advisory_text(advisory_text)[:200] if advisory_text else "",
             })
         except Exception:
             pass
@@ -296,20 +356,33 @@ def main():
 
         # ── Route Metrics ───────────────────────────────────
         render_section_header(t("results_title", lang))
+        if res.get("mode_warning"):
+            render_mode_notice(res["mode_warning"])
         render_metrics(route_data, mode_key, lang)
 
-        # ── Alert Badges ────────────────────────────────────
+        # ── Alert Badges (now labeled per city, so it's clear which
+        #    weather condition belongs to origin vs destination) ──
         if origin_weather and dest_weather:
             st.write("")  # spacing
             c1, c2 = st.columns(2)
             with c1:
                 try:
-                    render_alert_badge(get_weather_alert_level(origin_weather), lang)
+                    render_alert_badge(
+                        get_weather_alert_level(origin_weather),
+                        lang,
+                        location_name=origin_name,
+                        icon_url=origin_weather.get("weather_icon_url", ""),
+                    )
                 except Exception:
                     pass
             with c2:
                 try:
-                    render_alert_badge(get_weather_alert_level(dest_weather), lang)
+                    render_alert_badge(
+                        get_weather_alert_level(dest_weather),
+                        lang,
+                        location_name=dest_name,
+                        icon_url=dest_weather.get("weather_icon_url", ""),
+                    )
                 except Exception:
                     pass
 

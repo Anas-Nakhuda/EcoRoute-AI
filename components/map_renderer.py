@@ -44,27 +44,35 @@ def create_route_map(
         ).add_to(fmap)
         fmap.fit_bounds(geometry)
 
-    # Origin marker
+    origin_short = origin_geo.get("display_name", "Origin").split(",")[0]
+    dest_short = dest_geo.get("display_name", "Destination").split(",")[0]
+
+    # Origin marker — tooltip now shows weather at a glance, on hover,
+    # so the user doesn't have to click the pin to know what's going on there.
+    origin_desc = origin_weather.get("weather_desc", "N/A")
+    origin_temp = origin_weather.get("temp_c", "N/A")
     origin_popup = (
-        f"<b>Origin:</b> {origin_geo.get('display_name', 'Origin').split(',')[0]}<br>"
-        f"{origin_weather.get('weather_desc', 'N/A')}, {origin_weather.get('temp_c', 'N/A')}°C"
+        f"<b>Origin:</b> {origin_short}<br>"
+        f"{origin_desc}, {origin_temp}°C"
     )
     folium.Marker(
         location=[origin_geo["lat"], origin_geo["lon"]],
         popup=folium.Popup(origin_popup, max_width=250),
-        tooltip="Origin",
+        tooltip=f"🟢 {origin_short} — {origin_desc}, {origin_temp}°C",
         icon=folium.Icon(color="green", icon="play", prefix="fa"),
     ).add_to(fmap)
 
     # Destination marker
+    dest_desc = dest_weather.get("weather_desc", "N/A")
+    dest_temp = dest_weather.get("temp_c", "N/A")
     dest_popup = (
-        f"<b>Destination:</b> {dest_geo.get('display_name', 'Destination').split(',')[0]}<br>"
-        f"{dest_weather.get('weather_desc', 'N/A')}, {dest_weather.get('temp_c', 'N/A')}°C"
+        f"<b>Destination:</b> {dest_short}<br>"
+        f"{dest_desc}, {dest_temp}°C"
     )
     folium.Marker(
         location=[dest_geo["lat"], dest_geo["lon"]],
         popup=folium.Popup(dest_popup, max_width=250),
-        tooltip="Destination",
+        tooltip=f"🔴 {dest_short} — {dest_desc}, {dest_temp}°C",
         icon=folium.Icon(color="red", icon="flag-checkered", prefix="fa"),
     ).add_to(fmap)
 

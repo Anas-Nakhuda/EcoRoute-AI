@@ -25,24 +25,51 @@ OPENWEATHER_BASE_URL = "https://api.openweathermap.org/data/2.5"
 WEATHER_ICON_URL = "https://openweathermap.org/img/wn/{icon}@2x.png"
 
 # ─── Travel Modes ──────────────────────────────────────────
+# `avg_speed_kmh` drives the *displayed* duration — see app.py, where it
+# overrides OSRM's raw duration. This matters because OSRM's free demo
+# server only supports the "driving" profile, so without this override
+# every mode (even Walk) would show car-speed timing for the same route.
+#
+# `max_realistic_km` / `min_realistic_km` are soft guardrails: if a chosen
+# mode is unrealistic for the given distance (e.g. cycling 300 km), the
+# app shows a friendly notice suggesting a better-suited mode instead of
+# silently presenting a misleading duration.
 TRAVEL_MODES = {
     "🚗 Car": {
         "osrm_profile": "driving",
         "icon": "🚗",
         "avg_speed_kmh": 60,
         "eco_factor": 0.21,  # kg CO2 per km
+        "max_realistic_km": None,
+        "min_realistic_km": None,
+    },
+    "🚆 Train": {
+        # No public rail-routing API is wired up here, so road distance
+        # from OSRM is used as an approximation of rail distance — it's
+        # usually in the right ballpark for intercity routes, but real
+        # rail corridors can differ from road corridors.
+        "osrm_profile": "driving",
+        "icon": "🚆",
+        "avg_speed_kmh": 55,  # realistic express-train average incl. stops
+        "eco_factor": 0.045,  # kg CO2 per km per passenger — rail is far cleaner than road
+        "max_realistic_km": None,
+        "min_realistic_km": 60,  # not worth suggesting a train for very short hops
     },
     "🚲 Bike": {
         "osrm_profile": "driving",  # OSRM demo server only supports driving
         "icon": "🚲",
         "avg_speed_kmh": 15,
         "eco_factor": 0.0,
+        "max_realistic_km": 80,  # beyond this, a single-day cycling trip is unrealistic
+        "min_realistic_km": None,
     },
     "🚶 Walk": {
         "osrm_profile": "driving",  # OSRM demo server only supports driving
         "icon": "🚶",
         "avg_speed_kmh": 5,
         "eco_factor": 0.0,
+        "max_realistic_km": 20,  # beyond this, walking stops being a realistic single trip
+        "min_realistic_km": None,
     },
 }
 
@@ -58,7 +85,7 @@ MAX_HISTORY_ITEMS = 50
 # ─── Gemini Model ───────────────────────────────────────────
 # "gemini-2.0-flash" is fast + free-tier friendly. If you hit quota
 # errors (HTTP 429), you can switch this to "gemini-1.5-flash".
-GEMINI_MODEL = "models/gemini-2.5-flash"
+GEMINI_MODEL = "gemini-flash-latest"
 GEMINI_TEMPERATURE = 0.7
 
 # ─── Map Themes ─────────────────────────────────────────────
