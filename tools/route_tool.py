@@ -70,6 +70,7 @@ def _geocode_open_meteo(place_name: str) -> Optional[dict]:
         "lat": float(top["latitude"]),
         "lon": float(top["longitude"]),
         "display_name": display_name or place_name,
+        "country": top.get("country") or "",
     }
 
 
@@ -91,10 +92,12 @@ def _geocode_nominatim(place_name: str) -> Optional[dict]:
         return None
 
     top = results[0]
+    address = top.get("address") or {}
     return {
         "lat": float(top["lat"]),
         "lon": float(top["lon"]),
         "display_name": top.get("display_name", place_name),
+        "country": address.get("country", "") if isinstance(address, dict) else "",
     }
 
 
@@ -193,7 +196,13 @@ def fetch_route_complete(origin: str, destination: str, profile: str = "driving"
     }
 
 
-def check_mode_feasibility(mode_cfg: dict, route_data: Optional[dict], great_circle_km: float):
+def check_mode_feasibility(
+    mode_cfg: dict,
+    route_data: Optional[dict],
+    great_circle_km: float,
+    origin_country: str = "",
+    dest_country: str = "",
+):
     """
     Decide whether the selected travel mode is actually possible for this
     route — not just "unrealistic" (see max/min_realistic_km in config.py
@@ -213,11 +222,29 @@ def check_mode_feasibility(mode_cfg: dict, route_data: Optional[dict], great_cir
             "✈️ Flight is the only realistic option for this route."
         )
 
-    if kind == "rail" and route_data.get("has_ferry"):
-        return False, (
-            f"This route requires a ~{route_data['ferry_km']} km sea ferry crossing. "
-            "No direct train service crosses open water like this — try 🚗 Car "
-            "(vehicles can ride the ferry) or ✈️ Flight instead."
-        )
+    if kind == "rail":
+        if route_data.get("has_ferry"):
+            return False, (
+                f"This route requires a ~{route_data['ferry_km']} km sea ferry crossing. "
+                "No direct train service crosses open water like this — try 🚗 Car "
+                "(vehicles can ride the ferry) or ✈️ Flight instead."
+            )
+
+        # A ferry-free road path existing doesn't mean a real passenger
+        # train does — e.g. OSRM can find a fully-land route from India to
+        # Saudi Arabia via Pakistan/Iran/Iraq, but there's no interoperable
+        # international rail network actually connecting those countries.
+        # Without a real rail-network dataset, the safest honest rule is:
+        # only offer Train within the same country. This is intentionally
+        # conservative — it will also block some real cross-border trains
+        # (e.g. Paris–London) rather than risk claiming a route that
+        # doesn't exist.
+        if origin_country and dest_country and origin_country.strip().lower() != dest_country.strip().lower():
+            return False, (
+                f"🚆 Train isn't offered for international routes here — {origin_country} and "
+                f"{dest_country} may not share a connected passenger rail network, and reliable "
+                f"cross-border schedules aren't available from free data sources. "
+                f"Try 🚗 Car or ✈️ Flight instead."
+            )
 
     return True, None

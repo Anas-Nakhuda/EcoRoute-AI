@@ -205,7 +205,13 @@ def main():
             # Hard feasibility check FIRST — is this mode even physically
             # possible for this route? (e.g. no train can cross open ocean,
             # no ground mode works if there's no road/ferry path at all.)
-            feasible, infeasible_reason = check_mode_feasibility(mode_cfg, route_data, great_circle_km)
+            feasible, infeasible_reason = check_mode_feasibility(
+                mode_cfg,
+                route_data,
+                great_circle_km,
+                origin_country=origin_geo.get("country", ""),
+                dest_country=dest_geo.get("country", ""),
+            )
             if not feasible:
                 steps[0]["state"] = "done"
                 steps[1]["state"] = "error"
