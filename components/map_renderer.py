@@ -43,6 +43,22 @@ def create_route_map(
             opacity=ROUTE_OPACITY,
         ).add_to(fmap)
         fmap.fit_bounds(geometry)
+    else:
+        # No road geometry (e.g. a flight, which doesn't follow roads) —
+        # draw a straight dashed line between the two points instead of
+        # leaving the map with two disconnected, unrelated-looking pins.
+        straight_line = [
+            [origin_geo["lat"], origin_geo["lon"]],
+            [dest_geo["lat"], dest_geo["lon"]],
+        ]
+        folium.PolyLine(
+            straight_line,
+            color=ROUTE_COLOR,
+            weight=ROUTE_WEIGHT,
+            opacity=ROUTE_OPACITY,
+            dash_array="10, 10",
+        ).add_to(fmap)
+        fmap.fit_bounds(straight_line)
 
     origin_short = origin_geo.get("display_name", "Origin").split(",")[0]
     dest_short = dest_geo.get("display_name", "Destination").split(",")[0]

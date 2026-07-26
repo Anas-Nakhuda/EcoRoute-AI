@@ -10,6 +10,7 @@ restriction and is a drop-in replacement for city/place lookups.
 """
 
 from typing import Optional
+import math
 
 import requests
 
@@ -23,6 +24,26 @@ HEADERS = {
 OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
 REQUEST_TIMEOUT = 15
+
+
+class NoGroundRouteError(Exception):
+    """
+    Raised when OSRM cannot find ANY road/ferry path between two points —
+    meaning they're separated by open water with no mapped crossing (e.g.
+    across an ocean). In that case Car/Train/Bike/Walk aren't physically
+    possible at all; only Flight is.
+    """
+    pass
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle ('as the crow flies') distance between two points, in km."""
+    R = 6371.0088  # mean Earth radius in km
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return round(2 * R * math.asin(math.sqrt(a)), 2)
 
 
 def _geocode_open_meteo(place_name: str) -> Optional[dict]:
@@ -99,13 +120,18 @@ def geocode_location(place_name: str) -> dict:
 def fetch_route(origin_geo: dict, dest_geo: dict, profile: str = "driving") -> dict:
     """
     Fetch a route between two geocoded points using OSRM.
-    Returns distance (km), duration (min), and route geometry (list of [lat, lon]).
+    Returns distance (km), duration (min), route geometry (list of [lat, lon]),
+    and ferry-crossing info — OSRM tags individual steps with mode="ferry"
+    when the route includes a mapped sea/strait ferry crossing, which is
+    the signal used elsewhere to decide whether Train is realistic for
+    this route (trains generally don't cross open water).
     """
     coords = f"{origin_geo['lon']},{origin_geo['lat']};{dest_geo['lon']},{dest_geo['lat']}"
     url = f"{OSRM_BASE_URL}/{profile}/{coords}"
     params = {
         "overview": "full",
         "geometries": "geojson",
+        "steps": "true",
     }
 
     response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
@@ -113,29 +139,85 @@ def fetch_route(origin_geo: dict, dest_geo: dict, profile: str = "driving") -> d
     data = response.json()
 
     if data.get("code") != "Ok" or not data.get("routes"):
-        raise RuntimeError(f"OSRM could not find a route (code: {data.get('code', 'unknown')}).")
+        raise NoGroundRouteError(
+            f"OSRM could not find a road/ferry path (code: {data.get('code', 'unknown')})."
+        )
 
     route = data["routes"][0]
     # GeoJSON geometry is [lon, lat] pairs — Folium/Leaflet want [lat, lon].
     geometry = [[lat, lon] for lon, lat in route["geometry"]["coordinates"]]
 
+    ferry_m = 0.0
+    for leg in route.get("legs", []):
+        for step in leg.get("steps", []):
+            if step.get("mode") == "ferry":
+                ferry_m += step.get("distance", 0)
+
     return {
         "distance_km": round(route["distance"] / 1000, 2),
         "duration_min": round(route["duration"] / 60, 1),
         "geometry": geometry,
+        "ferry_km": round(ferry_m / 1000, 2),
+        "has_ferry": ferry_m > 0,
     }
 
 
 def fetch_route_complete(origin: str, destination: str, profile: str = "driving") -> dict:
     """
     Full pipeline: geocode both places, then fetch the route between them.
+
+    `route_data` will be None if OSRM cannot find any road/ferry path at all
+    (e.g. the two places are separated by open ocean with no mapped
+    crossing) — the caller should treat that as "only Flight is possible".
+    `great_circle_km` is always returned (pure math, no network round trip
+    the OSRM call already didn't need) so Flight distance can be computed
+    even when ground routing fails entirely.
     """
     origin_geo = geocode_location(origin)
     dest_geo = geocode_location(destination)
-    route_data = fetch_route(origin_geo, dest_geo, profile=profile)
+
+    great_circle_km = _haversine_km(
+        origin_geo["lat"], origin_geo["lon"], dest_geo["lat"], dest_geo["lon"]
+    )
+
+    try:
+        route_data = fetch_route(origin_geo, dest_geo, profile=profile)
+    except NoGroundRouteError:
+        route_data = None
 
     return {
         "origin_geo": origin_geo,
         "dest_geo": dest_geo,
         "route_data": route_data,
+        "great_circle_km": great_circle_km,
     }
+
+
+def check_mode_feasibility(mode_cfg: dict, route_data: Optional[dict], great_circle_km: float):
+    """
+    Decide whether the selected travel mode is actually possible for this
+    route — not just "unrealistic" (see max/min_realistic_km in config.py
+    for that), but physically impossible.
+
+    Returns (feasible: bool, reason: str | None).
+    """
+    kind = mode_cfg.get("kind", "road")
+
+    if kind == "flight":
+        return True, None
+
+    if route_data is None:
+        return False, (
+            "No road or ferry connection exists between these two places — "
+            "they're separated by open water with no mapped crossing. "
+            "✈️ Flight is the only realistic option for this route."
+        )
+
+    if kind == "rail" and route_data.get("has_ferry"):
+        return False, (
+            f"This route requires a ~{route_data['ferry_km']} km sea ferry crossing. "
+            "No direct train service crosses open water like this — try 🚗 Car "
+            "(vehicles can ride the ferry) or ✈️ Flight instead."
+        )
+
+    return True, None

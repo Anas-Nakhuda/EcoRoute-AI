@@ -20,7 +20,7 @@ from config import (
     APP_VERSION,
     APP_ICON,
 )
-from tools.route_tool import fetch_route_complete
+from tools.route_tool import fetch_route_complete, check_mode_feasibility
 from tools.weather_tool import fetch_weather, get_weather_alert_level
 from agents.ecoroute_agent import generate_advisory
 from components.map_renderer import create_route_map, render_map
@@ -197,37 +197,74 @@ def main():
             route_result = fetch_route_complete(origin, destination)
             origin_geo = route_result["origin_geo"]
             dest_geo = route_result["dest_geo"]
-            route_data = route_result["route_data"]
+            route_data = route_result["route_data"]  # None if no road/ferry path exists at all
+            great_circle_km = route_result["great_circle_km"]
 
-            # OSRM's free demo server only routes with the "driving" profile,
-            # so its raw duration reflects car speeds no matter which mode is
-            # selected. Recalculate duration using the chosen mode's realistic
-            # average speed, keeping OSRM's road distance as the base figure.
             mode_cfg = TRAVEL_MODES.get(mode_key, {})
-            avg_speed = mode_cfg.get("avg_speed_kmh")
-            if avg_speed:
-                route_data["duration_min"] = round(
-                    (route_data["distance_km"] / avg_speed) * 60, 1
-                )
 
-            # Flag mode/distance combinations that aren't realistic, rather
-            # than silently showing a misleading duration (e.g. "cycling"
-            # 300 km in a few hours).
+            # Hard feasibility check FIRST — is this mode even physically
+            # possible for this route? (e.g. no train can cross open ocean,
+            # no ground mode works if there's no road/ferry path at all.)
+            feasible, infeasible_reason = check_mode_feasibility(mode_cfg, route_data, great_circle_km)
+            if not feasible:
+                steps[0]["state"] = "done"
+                steps[1]["state"] = "error"
+                steps[1]["detail"] = "Not possible for this mode"
+                tracker.update(steps)
+                st.error(f"🚫 {infeasible_reason}")
+                return
+
+            if mode_cfg.get("kind") == "flight":
+                # Flights don't follow roads — use great-circle distance with
+                # a small routing-inefficiency margin, realistic cruise speed,
+                # plus fixed overhead for check-in/security/taxi/boarding.
+                distance_km = round(great_circle_km * 1.05, 2)
+                cruise_speed = mode_cfg.get("avg_speed_kmh", 700)
+                overhead_min = mode_cfg.get("fixed_overhead_min", 90)
+                duration_min = round((distance_km / cruise_speed) * 60 + overhead_min, 1)
+                route_data = {
+                    "distance_km": distance_km,
+                    "duration_min": duration_min,
+                    "geometry": [],  # no road geometry for flights
+                    "ferry_km": 0.0,
+                    "has_ferry": False,
+                }
+            else:
+                # OSRM's free demo server only routes with the "driving"
+                # profile, so its raw duration reflects car speeds no matter
+                # which mode is selected. Recalculate using the chosen
+                # mode's realistic average speed, keeping OSRM's road
+                # distance as the base figure.
+                avg_speed = mode_cfg.get("avg_speed_kmh")
+                if avg_speed:
+                    route_data["duration_min"] = round(
+                        (route_data["distance_km"] / avg_speed) * 60, 1
+                    )
+
+            # Soft realism guardrails — the mode IS physically possible,
+            # just impractical at this distance (or involves a ferry leg
+            # worth calling out even though it doesn't block the mode).
             mode_warning = None
+            if route_data.get("has_ferry") and mode_cfg.get("kind") != "flight":
+                mode_warning = f"⛴️ This route includes a ~{route_data['ferry_km']} km ferry crossing."
+
             max_km = mode_cfg.get("max_realistic_km")
             min_km = mode_cfg.get("min_realistic_km")
             distance_km = route_data["distance_km"]
+            realism_note = None
             if max_km and distance_km > max_km:
-                mode_warning = (
+                realism_note = (
                     f"⚠️ {distance_km} km is a long way to cover by {mode_key.split(' ', 1)[-1].lower()} "
                     f"in one trip. The duration below assumes a steady pace the whole way — "
-                    f"for a route this long, Car or Train would be more realistic."
+                    f"for a route this long, Car, Train, or Flight would be more realistic."
                 )
             elif min_km and distance_km < min_km:
-                mode_warning = (
+                realism_note = (
                     f"ℹ️ {mode_key.split(' ', 1)[-1]} usually isn't the fastest choice for a "
                     f"{distance_km} km hop — Car or Bike will likely get you there quicker door-to-door."
                 )
+            if realism_note:
+                mode_warning = f"{mode_warning} {realism_note}" if mode_warning else realism_note
 
             steps[0]["state"] = "done"
             steps[1]["state"] = "done"

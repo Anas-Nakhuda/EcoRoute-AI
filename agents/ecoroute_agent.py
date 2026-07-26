@@ -85,6 +85,33 @@ def _friendly_error(exc: Exception) -> str:
     return msg[:300]
 
 
+def _extract_text(content) -> str:
+    """
+    Normalize LangChain's response.content into a plain string.
+
+    Newer langchain-google-genai versions can return `content` as a list of
+    blocks — e.g. [{'type': 'text', 'text': '...'}] — instead of a plain
+    string. The previous version of this function did `str(text)` directly,
+    which turned that list into a literal Python-object dump like
+    "[{'type': 'text', 'text': 'Hello! ...'}]" and showed up as-is in the
+    UI. This extracts and joins just the actual text parts.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") in (None, "text"):
+                    parts.append(str(block.get("text", "")))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n\n".join(p for p in parts if p)
+    return str(content)
+
+
 def generate_advisory(
     route_data: dict,
     origin_weather: dict,
@@ -127,9 +154,9 @@ def generate_advisory(
     except Exception as exc:
         raise RuntimeError(_friendly_error(exc)) from exc
 
-    text = getattr(response, "content", None)
+    text = _extract_text(getattr(response, "content", None))
 
-    if not text or not str(text).strip():
+    if not text or not text.strip():
         raise RuntimeError("Gemini returned an empty response.")
 
-    return str(text).strip()
+    return text.strip()
